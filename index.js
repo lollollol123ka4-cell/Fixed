@@ -3,7 +3,7 @@ const TOOL_NAME = 'SendVideoClip';
 const DEFAULT_CATEGORY = 'heterosexual';
 const MAX_SENT_IDS = 500;
 
-function cleanUrl(url) {
+function unescapeUrl(url) {
     if (typeof url !== 'string') return url;
     return url.replace(/\\ me/g, '').replace(/\\\//g, '/').trim();
 }
@@ -19,6 +19,37 @@ function getSettings() {
     return extensionSettings[MODULE_NAME];
 }
 
+/**
+ * Extracts raw CDN endpoints (v.redd.it, redgifs, imgur, etc.) from API payloads
+ * or normalizes media URLs into direct MP4 stream links.
+ */
+function extractDirectMediaUrl(videoObj) {
+    // Check if the backend API object already contains direct media attributes
+    let url = videoObj.direct_url || videoObj.media_url || videoObj.src || videoObj.url;
+    url = unescapeUrl(url);
+
+    if (!url) return '';
+
+    // Convert v.redd.it page/post links to direct video stream endpoints
+    if (url.includes('v.redd.it') && !url.endsWith('.mp4') && !url.endsWith('.m3u8')) {
+        return `${url.replace(/\/$/, '')}/DASH_720.mp4`;
+    }
+
+    // Convert RedGifs watch links to direct CDN video URLs
+    if (url.includes('redgifs.com/watch/')) {
+        const id = url.split('/watch/')[1]?.split('?')[0];
+        if (id) return `https://media.redgifs.com/${id.toLowerCase()}.mp4`;
+    }
+
+    // If link is a reddclips webpage route, fallback to original Reddit post target if available
+    if (url.includes('reddclips.com/video/') || url.includes('reddclips.com/r/')) {
+        if (videoObj.reddit_url) return extractDirectMediaUrl({ url: videoObj.reddit_url });
+        if (videoObj.permalink) return `https://v.redd.it/${videoObj.id}/DASH_720.mp4`;
+    }
+
+    return url;
+}
+
 async function fetchVideos(category) {
     const response = await fetch(`/api/reddclips/videos?category=${encodeURIComponent(category)}`, {
         headers: SillyTavern.getContext().getRequestHeaders(),
@@ -30,10 +61,7 @@ async function fetchVideos(category) {
         throw new Error('No videos available right now.');
     }
 
-    return data.videos.map(video => ({
-        ...video,
-        url: cleanUrl(video.url)
-    }));
+    return data.videos;
 }
 
 function pickUnseenVideo(videos, seenIds) {
@@ -42,44 +70,22 @@ function pickUnseenVideo(videos, seenIds) {
     return { video: videos[Math.floor(Math.random() * videos.length)], cycled: true };
 }
 
-/**
- * Normalizes video links into an embeddable format or direct media endpoint
- * to prevent broken link / 404 errors in SillyTavern UI.
- */
-function getPlayableMediaUrl(rawUrl) {
-    if (!rawUrl) return rawUrl;
-
-    // Handle v.redd.it direct streams
-    if (rawUrl.includes('v.redd.it') && !rawUrl.endsWith('.mp4') && !rawUrl.endsWith('.m3u8')) {
-        return `${rawUrl.replace(/\/$/, '')}/DASH_720.mp4`;
-    }
-
-    // Handle RedGifs direct media endpoints if present
-    if (rawUrl.includes('redgifs.com/watch/')) {
-        const id = rawUrl.split('/watch/')[1]?.split('?')[0];
-        if (id) return `https://media.redgifs.com/${id}.mp4`;
-    }
-
-    // Return cleaned URL directly
-    return rawUrl;
-}
-
 async function sendVideoMessage(video) {
     const context = SillyTavern.getContext();
     const name = context.groupId ? context.name1 : context.name2;
-    
-    const targetUrl = getPlayableMediaUrl(video.url);
 
-    // Provide a clickable fallback link in the text alongside the media frame
+    const directMediaUrl = extractDirectMediaUrl(video);
+    const webPageUrl = unescapeUrl(video.url || `https://reddclips.com/r/${video.subreddit}/${video.id}`);
+
     const message = {
         name: name,
         is_user: false,
         is_system: false,
         send_date: context.getMessageTimeStamp ? context.getMessageTimeStamp() : Date.now(),
-        mes: `[${name} sends a video: "${video.title}" (r/${video.subreddit})]\n\n🎥 [Watch Video](${video.url})`,
+        mes: `[${name} sends a video: "${video.title}" (r/${video.subreddit})]\n\n🔗 [View on Reddclips](${webPageUrl})`,
         extra: {
             media: [{ 
-                url: targetUrl, 
+                url: directMediaUrl, 
                 type: 'video', 
                 title: video.title, 
                 source: 'api' 
@@ -128,7 +134,7 @@ export async function init() {
             saveSettingsDebounced();
 
             await sendVideoMessage(video);
-            return `Sent video "${video.title}" (r/${video.subreddit}): ${video.url}${cycled ? ' (cycle restarted)' : ''}`;
+            return `Sent video "${video.title}" (r/${video.subreddit})${cycled ? ' (cycle restarted)' : ''}`;
         },
     });
 }
