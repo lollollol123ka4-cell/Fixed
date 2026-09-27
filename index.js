@@ -3,7 +3,7 @@ const TOOL_NAME = 'SendVideoClip';
 const DEFAULT_CATEGORY = 'heterosexual';
 const MAX_SENT_IDS = 500;
 
-function unescapeUrl(url) {
+function cleanUrl(url) {
     if (typeof url !== 'string') return url;
     return url.replace(/\\ me/g, '').replace(/\\\//g, '/').trim();
 }
@@ -20,34 +20,31 @@ function getSettings() {
 }
 
 /**
- * Extracts raw CDN endpoints (v.redd.it, redgifs, imgur, etc.) from API payloads
- * or normalizes media URLs into direct MP4 stream links.
+ * Converts synthetic Reddclips page links into real playable stream URLs
  */
-function extractDirectMediaUrl(videoObj) {
-    // Check if the backend API object already contains direct media attributes
-    let url = videoObj.direct_url || videoObj.media_url || videoObj.src || videoObj.url;
-    url = unescapeUrl(url);
+function resolveRealMediaUrl(video) {
+    let rawUrl = cleanUrl(video.url);
 
-    if (!url) return '';
-
-    // Convert v.redd.it page/post links to direct video stream endpoints
-    if (url.includes('v.redd.it') && !url.endsWith('.mp4') && !url.endsWith('.m3u8')) {
-        return `${url.replace(/\/$/, '')}/DASH_720.mp4`;
+    // If API sends a reddclips.com/video/[id].mp4 link, extract ID & stream from Reddit direct CDN
+    if (rawUrl.includes('reddclips.com/video/')) {
+        const matches = rawUrl.match(/\/video\/([a-zA-Z0-9]+)\.mp4/);
+        const videoId = matches ? matches[1] : video.id;
+        if (videoId) {
+            return `https://v.redd.it/${videoId}/DASH_720.mp4`;
+        }
     }
 
-    // Convert RedGifs watch links to direct CDN video URLs
-    if (url.includes('redgifs.com/watch/')) {
-        const id = url.split('/watch/')[1]?.split('?')[0];
-        if (id) return `https://media.redgifs.com/${id.toLowerCase()}.mp4`;
+    // Fallback to video.id if rawUrl is a webpage
+    if (video.id && !rawUrl.match(/\.(mp4|webm)(\?.*)?$/i)) {
+        return `https://v.redd.it/${video.id}/DASH_720.mp4`;
     }
 
-    // If link is a reddclips webpage route, fallback to original Reddit post target if available
-    if (url.includes('reddclips.com/video/') || url.includes('reddclips.com/r/')) {
-        if (videoObj.reddit_url) return extractDirectMediaUrl({ url: videoObj.reddit_url });
-        if (videoObj.permalink) return `https://v.redd.it/${videoObj.id}/DASH_720.mp4`;
+    // Convert raw v.redd.it base links to direct MP4 DASH streams
+    if (rawUrl.includes('v.redd.it') && !rawUrl.endsWith('.mp4') && !rawUrl.endsWith('.m3u8')) {
+        return `${rawUrl.replace(/\/$/, '')}/DASH_720.mp4`;
     }
 
-    return url;
+    return rawUrl;
 }
 
 async function fetchVideos(category) {
@@ -74,15 +71,15 @@ async function sendVideoMessage(video) {
     const context = SillyTavern.getContext();
     const name = context.groupId ? context.name1 : context.name2;
 
-    const directMediaUrl = extractDirectMediaUrl(video);
-    const webPageUrl = unescapeUrl(video.url || `https://reddclips.com/r/${video.subreddit}/${video.id}`);
+    const directMediaUrl = resolveRealMediaUrl(video);
+    const webPageUrl = cleanUrl(video.url);
 
     const message = {
         name: name,
         is_user: false,
         is_system: false,
         send_date: context.getMessageTimeStamp ? context.getMessageTimeStamp() : Date.now(),
-        mes: `[${name} sends a video: "${video.title}" (r/${video.subreddit})]\n\n🔗 [View on Reddclips](${webPageUrl})`,
+        mes: `[${name} sends a video: "${video.title}" (r/${video.subreddit})]\n\n🔗 [Watch Page](${webPageUrl})`,
         extra: {
             media: [{ 
                 url: directMediaUrl, 
