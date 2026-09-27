@@ -1,0 +1,13 @@
+{
+    "display_name": "Reddclips Videos",
+    "loading_order": 90,
+    "requires": [],
+    "optional": [],
+    "js": "index.js",
+    "author": "custom",
+    "version": "1.0.0",
+    "homePage": "https://reddclips.com",
+    "hooks": {
+        "activate": "init"
+    }
+}
