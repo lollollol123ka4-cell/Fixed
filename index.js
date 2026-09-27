@@ -3,9 +3,9 @@ const TOOL_NAME = 'SendVideoClip';
 const DEFAULT_CATEGORY = 'heterosexual';
 const MAX_SENT_IDS = 500;
 
-function unescapeUrl(url) {
+function cleanUrl(url) {
     if (typeof url !== 'string') return url;
-    return url.replace(/\\ me/g, '').replace(/\\\//g, '/');
+    return url.replace(/\\ me/g, '').replace(/\\\//g, '/').trim();
 }
 
 function getSettings() {
@@ -17,44 +17,6 @@ function getSettings() {
         extensionSettings[MODULE_NAME].sent = {};
     }
     return extensionSettings[MODULE_NAME];
-}
-
-/**
- * Resolves HTML webpage links (e.g., https://reddclips.com/r/...) 
- * into direct playable MP4 / media stream URLs.
- */
-async function resolveDirectMediaUrl(pageUrl) {
-    if (typeof pageUrl !== 'string' || !pageUrl) return pageUrl;
-
-    // Direct video stream already
-    if (pageUrl.match(/\.(mp4|webm|m3u8)(\?.*)?$/i)) {
-        return pageUrl;
-    }
-
-    // Handle v.redd.it direct fallback
-    if (pageUrl.includes('v.redd.it')) {
-        return `${pageUrl.replace(/\/$/, '')}/DASH_720.mp4`;
-    }
-
-    try {
-        const response = await fetch(pageUrl);
-        if (!response.ok) return pageUrl;
-        
-        const html = await response.text();
-        const parser = new DOMParser();
-        const doc = parser.parseFromString(html, 'text/html');
-
-        // Extract direct video source from OpenGraph tags or video elements
-        const directMedia = doc.querySelector('meta[property="og:video:secure_url"]')?.getAttribute('content') ||
-                            doc.querySelector('meta[property="og:video"]')?.getAttribute('content') ||
-                            doc.querySelector('video source')?.getAttribute('src') ||
-                            doc.querySelector('video')?.getAttribute('src');
-
-        return directMedia ? unescapeUrl(directMedia) : pageUrl;
-    } catch (e) {
-        console.warn('[Reddclips] Failed to resolve direct media URL:', e);
-        return pageUrl;
-    }
 }
 
 async function fetchVideos(category) {
@@ -70,7 +32,7 @@ async function fetchVideos(category) {
 
     return data.videos.map(video => ({
         ...video,
-        url: unescapeUrl(video.url)
+        url: cleanUrl(video.url)
     }));
 }
 
@@ -80,21 +42,48 @@ function pickUnseenVideo(videos, seenIds) {
     return { video: videos[Math.floor(Math.random() * videos.length)], cycled: true };
 }
 
+/**
+ * Normalizes video links into an embeddable format or direct media endpoint
+ * to prevent broken link / 404 errors in SillyTavern UI.
+ */
+function getPlayableMediaUrl(rawUrl) {
+    if (!rawUrl) return rawUrl;
+
+    // Handle v.redd.it direct streams
+    if (rawUrl.includes('v.redd.it') && !rawUrl.endsWith('.mp4') && !rawUrl.endsWith('.m3u8')) {
+        return `${rawUrl.replace(/\/$/, '')}/DASH_720.mp4`;
+    }
+
+    // Handle RedGifs direct media endpoints if present
+    if (rawUrl.includes('redgifs.com/watch/')) {
+        const id = rawUrl.split('/watch/')[1]?.split('?')[0];
+        if (id) return `https://media.redgifs.com/${id}.mp4`;
+    }
+
+    // Return cleaned URL directly
+    return rawUrl;
+}
+
 async function sendVideoMessage(video) {
     const context = SillyTavern.getContext();
     const name = context.groupId ? context.name1 : context.name2;
+    
+    const targetUrl = getPlayableMediaUrl(video.url);
 
-    // Resolve direct streaming video file URL from webpage link
-    const directVideoUrl = await resolveDirectMediaUrl(video.url);
-
+    // Provide a clickable fallback link in the text alongside the media frame
     const message = {
         name: name,
         is_user: false,
         is_system: false,
         send_date: context.getMessageTimeStamp ? context.getMessageTimeStamp() : Date.now(),
-        mes: `[${name} sends a video: "${video.title}" (r/${video.subreddit})]\n\n${directVideoUrl}`,
+        mes: `[${name} sends a video: "${video.title}" (r/${video.subreddit})]\n\n🎥 [Watch Video](${video.url})`,
         extra: {
-            media: [{ url: directVideoUrl, type: 'video', title: video.title, source: 'api' }],
+            media: [{ 
+                url: targetUrl, 
+                type: 'video', 
+                title: video.title, 
+                source: 'api' 
+            }],
             media_display: 'gallery',
             media_index: 0,
             inline_image: false,
@@ -112,7 +101,7 @@ export async function init() {
     registerFunctionTool({
         name: TOOL_NAME,
         displayName: 'Send Video Clip',
-        description: 'Fetch a random video clip from Reddclips and send it in the chat. Use when the user asks for a video, a clip, or something to watch. Every call sends a different video not sent before in this chat.',
+        description: 'Fetch a random video clip from Reddclips and send it in the chat.',
         parameters: Object.freeze({
             $schema: 'http://json-schema.org/draft-04/schema#',
             type: 'object',
